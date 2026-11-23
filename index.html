@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#1b1a17" />
+    <title>Epic Catch — утренняя рыбалка</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="vignette"></div>
+
+    <div id="hud" hidden>
+      <div id="tally">Улов: 0</div>
+      <div id="leisure" hidden>
+        <button id="l-beer" type="button"><span class="ico">🍺</span><span>Пиво</span></button>
+        <button id="l-cig" type="button"><span class="ico">🚬</span><span id="l-cig-label">Сигарета</span></button>
+        <button id="l-joint" type="button"><span class="ico">🌿</span><span id="l-joint-label">Скрутить</span></button>
+      </div>
+      <div id="toast" aria-live="polite"></div>
+
+      <div id="bottom">
+        <div id="hint"></div>
+        <div id="power" class="meter" hidden>
+          <div class="meter-label">Сила заброса</div>
+          <div class="bar"><div id="powerFill"></div></div>
+        </div>
+        <div id="tension" class="meter" hidden>
+          <div class="meter-label"><span>Натяжение лески</span><span id="dist"></span></div>
+          <div class="bar zones"><div id="needle"></div></div>
+          <div class="zone-labels"><span>слабина</span><span>норма</span><span>порвёт</span></div>
+        </div>
+        <button id="act" type="button">Заброс</button>
+      </div>
+    </div>
+
+    <div id="card" hidden>
+      <div id="cardKicker">Поймана</div>
+      <div id="cardName"></div>
+      <div id="cardStats">
+        <div><span id="cardKg"></span><small>вес</small></div>
+        <div><span id="cardCm"></span><small>длина</small></div>
+      </div>
+      <div id="cardButtons">
+        <button id="release" type="button" class="ghost">Отпустить</button>
+        <button id="keep" type="button">В садок</button>
+      </div>
+    </div>
+
+    <div id="start">
+      <div id="startInner">
+        <h1>Epic Catch</h1>
+        <p>Раннее утро, тихое озеро, поплавочная удочка.</p>
+        <button id="startBtn" type="button">Начать рыбалку</button>
+        <div id="loading">Готовим озеро…</div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
