@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Sfx } from './audio';
-import { Hand, POSES } from './hands';
+import { Hand, POSES, type HandPose } from './hands';
 import { clamp, damp, mulberry32 } from './noise';
 
 export type LeisureKind = 'beer' | 'cig' | 'joint';
@@ -28,6 +28,8 @@ const _q = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _m = new THREE.Matrix4();
 const _e = new THREE.Euler();
+const _m2 = new THREE.Matrix4();
+const ONE = new THREE.Vector3(1, 1, 1);
 
 function ease(u: number): number {
   const x = clamp(u, 0, 1);
@@ -223,23 +225,106 @@ class Smoke {
 
 const ROLL_STAGES = ['Насыпаем', 'Крутим', 'Заклеиваем'];
 
-// Left hand, smoking. Rest: back of the hand up, fingers pointing out over the water,
-// cigarette standing up between them. Mouth: palm turned to the face.
+/** Orientation with the fingers along `fingersDir` and the palm facing `palmDir`. */
+function aim(fingersDir: [number, number, number], palmDir: [number, number, number]): THREE.Quaternion {
+  const y = new THREE.Vector3(...fingersDir).normalize();
+  const z = new THREE.Vector3(...palmDir);
+  const x = new THREE.Vector3().crossVectors(y, z).normalize();
+  z.crossVectors(x, y).normalize();
+  return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+}
+
+/** Mirror a transform across the plane x = 0: how the right hand copies the left. */
+function mirrorQ(q: THREE.Quaternion, out: THREE.Quaternion): THREE.Quaternion {
+  return out.set(q.x, -q.y, -q.z, q.w);
+}
+
+// ---- Left hand, smoking. Rest: back of the hand up, fingers pointing out over the water,
+// the smoke standing up from them. Mouth: palm turned to the face.
 const L_REST = euler(-1.25, Math.PI, 0.35, 'ZXY');
 const L_MOUTH = euler(0.45, 0.25, -0.5, 'ZXY');
-// Right hand round a bottle: thumb side up, fingers reaching away, palm to the left.
-const R_BOTTLE = basis([0, 1, 0], [0, 0, -1], [-1, 0, 0]);
-// Rolling: both hands low in front, fingertips meeting over the paper.
-const L_ROLL = euler(-0.75, 0.5, -1.0, 'YXZ');
-const R_ROLL = euler(-0.75, -0.5, 1.0, 'YXZ');
-
-/** Where the cigarette sits between index and middle finger, in the left hand's frame. */
-const SLOT_POS = new THREE.Vector3(-0.02, 0.146, 0.026);
+/** A joint is pinched, not wedged: at rest the hand is turned thumb-up so it points up and out. */
+const L_REST_JOINT = aim([0.25, 0.35, -0.9], [0.75, -0.6, 0.2]);
+/** Where a cigarette sits between index and middle finger, in the left hand's frame. */
+const CIG_POS = new THREE.Vector3(-0.009, 0.14, 0.036);
+/** Where a joint sits in the thumb-and-index pinch. */
+const JOINT_POS = new THREE.Vector3(-0.0205, 0.1175, 0.0805);
+/** Both stick out through the back of the fingers, filter end on the palm side. */
 const SLOT_Q = euler(-Math.PI / 2, 0, 0);
+
+// ---- Right hand round a bottle: thumb side up, fingers reaching away, palm to the left.
+const R_BOTTLE = basis([0, 1, 0], [0, 0, -1], [-1, 0, 0]);
+const BOTTLE_POS = new THREE.Vector3(-0.1, 0.085, 0.047);
+const BOTTLE_MOUTH = new THREE.Vector3(0.141, 0.085, 0.047);
+
+// ---- Rolling. Everything is laid out around the paper: X runs along it, +Z is the near
+// edge where the thumbs sit, the fingers support it from the far side.
+const ROLL_L_Q = new THREE.Quaternion(-0.3456, 0.3714, -0.5058, 0.6977);
+/** The pinch point (between thumb and first two fingertips) in the hand's frame. */
+const PINCH = new THREE.Vector3(-0.0166, 0.1166, 0.0626);
+const PINCH_X = 0.031;
+/** Right hand hovering over the paper, fingers down, crumbling herb into it. */
+const SPRINKLE_Q = aim([-0.5, -0.67, -0.54], [-0.25, -0.43, 0.86]);
+const PAPER_LEN = 0.084;
+const PAPER_WIDTH = 0.04;
+
+/** A rolling paper that curls from an open trough into a cone. */
+class RollPaper {
+  readonly mesh: THREE.Mesh;
+  private readonly pos: THREE.BufferAttribute;
+  private readonly nx = 12;
+  private readonly ns = 16;
+
+  constructor(material: THREE.Material) {
+    const geo = new THREE.BufferGeometry();
+    const count = (this.nx + 1) * (this.ns + 1);
+    this.pos = new THREE.BufferAttribute(new Float32Array(count * 3), 3);
+    geo.setAttribute('position', this.pos);
+    const uv = new Float32Array(count * 2);
+    const idx: number[] = [];
+    for (let i = 0; i <= this.nx; i++) {
+      for (let j = 0; j <= this.ns; j++) {
+        const k = i * (this.ns + 1) + j;
+        uv[k * 2] = i / this.nx;
+        uv[k * 2 + 1] = j / this.ns;
+        if (i < this.nx && j < this.ns) idx.push(k, k + this.ns + 1, k + 1, k + 1, k + this.ns + 1, k + this.ns + 2);
+      }
+    }
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    this.mesh = new THREE.Mesh(geo, material);
+    this.mesh.frustumCulled = false;
+    this.set(0);
+  }
+
+  /** Radius of the trough at `x` (metres from the middle) for a given amount of curl. */
+  radius(curl: number, x: number): number {
+    const arc = 4.3 + (7.9 - 4.3) * curl;
+    const taper = 1 + curl * 0.3 * (x / (PAPER_LEN / 2));
+    return (PAPER_WIDTH / arc) * taper;
+  }
+
+  /** @param curl 0 = open trough waiting for the herb, 1 = rolled shut */
+  set(curl: number): void {
+    const arc = 4.3 + (7.9 - 4.3) * curl;
+    for (let i = 0; i <= this.nx; i++) {
+      const x = (i / this.nx - 0.5) * PAPER_LEN;
+      const r = this.radius(curl, x);
+      for (let j = 0; j <= this.ns; j++) {
+        // The near edge tucks in under the far one as it closes.
+        const phi = (j / this.ns - 0.5) * arc + curl * 0.6;
+        const rr = r * (1 + 0.1 * curl * (j / this.ns));
+        this.pos.setXYZ(i * (this.ns + 1) + j, x, -rr * Math.cos(phi), rr * Math.sin(phi));
+      }
+    }
+    this.pos.needsUpdate = true;
+    this.mesh.geometry.computeVertexNormals();
+  }
+}
 
 /**
  * Beer, cigarettes and a hand-rolled joint for the long wait between bites.
- * Everything is hold-to-use: hold a button to drink or draw, let go to stop.
+ * Everything is hold-to-use: hold a button to drink, draw or roll, let go to stop.
  */
 export class Leisure {
   readonly rig = new THREE.Group();
@@ -252,16 +337,17 @@ export class Leisure {
   onLabels: (labels: LeisureLabels) => void = () => {};
   onToast: (text: string) => void = () => {};
 
-  private readonly left: Hand;
-  private readonly right: Hand;
-  private readonly bottle = new THREE.Group();
   /** The open bottle standing on the pier while it is not in the hand. */
   readonly pierBottle = new THREE.Group();
+  private readonly bottle = new THREE.Group();
   private readonly lighter = new THREE.Group();
   private readonly cig: Smoke;
   private readonly joint: Smoke;
-  private readonly paper = new THREE.Group();
-  private readonly herbs: THREE.Object3D[] = [];
+  private readonly paper: RollPaper;
+  /** Moves with the paper: the herb lying in it. */
+  private readonly rollFrame = new THREE.Group();
+  private readonly herbs: THREE.Mesh[] = [];
+  private readonly crumbs: THREE.Mesh[] = [];
   private readonly puffs: Puff[] = [];
   private readonly flameSprite: THREE.Sprite;
 
@@ -290,26 +376,41 @@ export class Leisure {
   private jointRolled = false;
   private rollP = 0;
   private rollUp = 0;
+  private rollIdle = 0;
   private rollStage = -1;
+  private rollPhase = 0;
   private rustle = 0;
+  /** 1 while the finished joint is still held the way it was rolled; eases to the smoking grip. */
+  private regrip = 0;
   private admire = 0;
   private lastLabels = '';
 
-  constructor(
+  static async create(camera: THREE.Camera, env: THREE.Texture | null, audio: Sfx): Promise<Leisure> {
+    const skin = new THREE.MeshPhysicalMaterial({
+      color: 0xc9997c,
+      roughness: 0.58,
+      sheen: 0.5,
+      sheenColor: new THREE.Color(0xff8a70),
+      sheenRoughness: 0.6,
+      envMap: env,
+      envMapIntensity: 0.6,
+    });
+    const sleeve = new THREE.MeshStandardMaterial({ color: 0x4a5136, roughness: 0.96, side: THREE.DoubleSide });
+    const cuff = new THREE.MeshStandardMaterial({ color: 0x353a27, roughness: 0.98 });
+    const [left, right] = await Promise.all([Hand.create(false, skin, sleeve, cuff), Hand.create(true, skin, sleeve, cuff)]);
+    return new Leisure(camera, env, audio, left, right);
+  }
+
+  private constructor(
     camera: THREE.Camera,
     env: THREE.Texture | null,
     private readonly audio: Sfx,
+    private readonly left: Hand,
+    private readonly right: Hand,
   ) {
     camera.add(this.rig);
     const sprite = softSprite();
     const smoke = smokeSprite();
-
-    const skin = new THREE.MeshStandardMaterial({ color: 0xc9997c, roughness: 0.6, envMap: env, envMapIntensity: 0.6 });
-    const sleeve = new THREE.MeshStandardMaterial({ color: 0x4a5136, roughness: 0.96, side: THREE.DoubleSide });
-    const cuff = new THREE.MeshStandardMaterial({ color: 0x353a27, roughness: 0.98 });
-    const nail = new THREE.MeshStandardMaterial({ color: 0xe3bdaa, roughness: 0.32, envMap: env });
-    this.left = new Hand(false, skin, sleeve, cuff, nail);
-    this.right = new Hand(true, skin, sleeve, cuff, nail);
     this.rig.add(this.left.root, this.right.root);
 
     // Bottle: brown glass, paper label.
@@ -332,11 +433,11 @@ export class Leisure {
       color: 0x3a1c07,
       emissive: 0x4a2206,
       emissiveIntensity: 0.9,
-      roughness: 0.28,
-      clearcoat: 0.3,
-      clearcoatRoughness: 0.15,
+      roughness: 0.34,
+      clearcoat: 0.12,
+      clearcoatRoughness: 0.2,
       envMap: env,
-      envMapIntensity: 0.3,
+      envMapIntensity: 0.2,
       side: THREE.DoubleSide,
     });
     const glass = new THREE.Mesh(
@@ -355,7 +456,7 @@ export class Leisure {
     this.pierBottle.visible = false;
     // In the right hand's frame the thumb side (+X) is up the bottle.
     this.bottle.rotation.z = -Math.PI / 2;
-    this.bottle.position.set(-0.105, 0.07, 0.046);
+    this.bottle.position.copy(BOTTLE_POS);
     this.right.root.add(this.bottle);
 
     const lighterBody = new THREE.Mesh(
@@ -368,29 +469,33 @@ export class Leisure {
     );
     lighterCap.position.x = 0.044;
     this.lighter.add(lighterBody, lighterCap);
-    this.lighter.position.set(0.02, 0.066, 0.026);
+    this.lighter.position.set(0.018, 0.082, 0.03);
     this.right.root.add(this.lighter);
 
     this.cig = new Smoke(false, env, sprite);
     this.joint = new Smoke(true, env, sprite);
     this.rig.add(this.cig.group, this.joint.group);
 
-    // Rolling paper with the herb laid along it.
-    const sheet = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.078, 0.04),
-      new THREE.MeshStandardMaterial({ map: paperTexture(false), roughness: 0.9, side: THREE.DoubleSide }),
-    );
-    this.paper.add(sheet);
+    // Rolling paper, the herb that goes in it, and the pinch of it in the fingers.
+    this.paper = new RollPaper(new THREE.MeshStandardMaterial({ map: paperTexture(false), roughness: 0.9, side: THREE.DoubleSide }));
+    this.rollFrame.add(this.paper.mesh);
     const herbMat = new THREE.MeshStandardMaterial({ color: 0x55682a, roughness: 1, flatShading: true });
     const rnd = mulberry32(4);
-    for (let i = 0; i < 26; i++) {
-      const bud = new THREE.Mesh(new THREE.DodecahedronGeometry(0.0022 + rnd() * 0.0022, 0), herbMat);
-      bud.position.set(-0.031 + (i / 25) * 0.062, (rnd() - 0.5) * 0.007, 0.002 + rnd() * 0.003);
+    for (let i = 0; i < 30; i++) {
+      const bud = new THREE.Mesh(new THREE.DodecahedronGeometry(0.0019 + rnd() * 0.002, 0), herbMat);
+      bud.position.set(-0.032 + (i / 29) * 0.066, 0, (rnd() - 0.5) * 0.007);
       bud.rotation.set(rnd() * 3, rnd() * 3, rnd() * 3);
+      bud.userData.lift = rnd() * 0.003;
       this.herbs.push(bud);
-      this.paper.add(bud);
+      this.rollFrame.add(bud);
     }
-    this.rig.add(this.paper);
+    for (let i = 0; i < 5; i++) {
+      const crumb = new THREE.Mesh(new THREE.DodecahedronGeometry(0.0016 + rnd() * 0.0012, 0), herbMat);
+      crumb.userData.phase = rnd();
+      this.crumbs.push(crumb);
+      this.rollFrame.add(crumb);
+    }
+    this.rig.add(this.rollFrame);
 
     this.flameSprite = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: sprite, color: 0xffb24a, blending: THREE.AdditiveBlending, transparent: true, opacity: 0, depthWrite: false, fog: false }),
@@ -539,15 +644,20 @@ export class Leisure {
 
     // ---------- rolling (both hands)
     const rolling = this.using === 'roll';
+    const working = rolling && this.held === 'joint';
+    // Let go mid-roll and the hands wait a moment before going down; progress is kept.
+    this.rollIdle = working ? 0 : this.rollIdle + dt;
+    if (rolling && this.rollIdle > 1.6) this.using = null;
     this.rollUp = approach(this.rollUp, rolling ? 1 : 0, 2.2 * hideRate, dt);
-    if (rolling && this.held === 'joint' && this.rollUp > 0.85) {
-      this.rollP = Math.min(1, this.rollP + dt / 4.2);
+    if (working && this.rollUp > 0.9) {
+      this.rollP = Math.min(1, this.rollP + dt / 5.2);
+      this.rollPhase += dt;
       this.rustle -= dt;
-      if (this.rustle <= 0) {
-        this.rustle = 0.22 + Math.random() * 0.25;
+      if (this.rustle <= 0 && this.rollP > 0.05) {
+        this.rustle = 0.2 + Math.random() * 0.25;
         this.audio.rustle();
       }
-      const stage = this.rollP < 0.3 ? 0 : this.rollP < 0.82 ? 1 : 2;
+      const stage = this.rollP < 0.36 ? 0 : this.rollP < 0.8 ? 1 : 2;
       if (stage !== this.rollStage) {
         this.rollStage = stage;
         this.pushLabels();
@@ -558,11 +668,13 @@ export class Leisure {
         this.rollStage = -1;
         this.using = null;
         this.held = null;
-        this.admire = 2.2;
+        this.regrip = 1;
+        this.admire = 3;
         this.onToast('Готово. Удерживайте «Косяк», чтобы затянуться');
         this.pushLabels();
       }
     }
+    this.regrip = approach(this.regrip, 0, this.rollUp > 0.3 ? 0 : 1.6, dt);
 
     // ---------- smoking (left hand, lighter in the right)
     const kind = this.using === 'cig' || this.using === 'joint' ? this.using : null;
@@ -658,109 +770,168 @@ export class Leisure {
       sm.update(dt);
     }
 
+    // ---------- the rolling timeline
+    // 0 … 0.36 crumble the herb in, … 0.44 the right hand takes hold, … 0.8 roll,
+    // … 1 up to the mouth, a lick along the gum, and back down.
+    const p = this.rollP;
+    const r = ease(this.rollUp);
+    const pour = clamp(p / 0.34, 0, 1);
+    // Just sealed: the right hand keeps its hold for a moment, then lets go.
+    const finishing = this.jointRolled && this.using !== 'roll' && this.rollUp > 0;
+    const take = finishing ? 1 : ease((p - 0.36) / 0.08);
+    const curl = finishing ? 1 : ease((p - 0.44) / 0.34);
+    const sealUp = ease((p - 0.8) / 0.06) * (1 - ease((p - 0.95) / 0.05));
+    const lick = ease((p - 0.86) / 0.09);
+    const rollingNow = working && p > 0.44 && p < 0.8;
+
+    // The paper: low in front, tipped so we look down into it; raised to the lips to seal.
+    const frame = this.rollFrame;
+    frame.position.set(0, lift - 0.5 * hh, -d + 0.02);
+    frame.quaternion.setFromEuler(_e.set(0.95, 0, 0));
+    _p.set((0.03 - 0.06 * lick) * sealUp, lift * 0.4 - 0.115, -0.25);
+    frame.position.lerp(_p, sealUp);
+    frame.quaternion.slerp(_q.setFromEuler(_e.set(0.35, 0, 0)), sealUp);
+    frame.updateMatrix();
+    const wobble = rollingNow ? Math.sin(this.rollPhase * 9) : 0;
+
     // ---------- place the hands
     const smokeShown = this.cig.lit || this.joint.lit || kind !== null || this.admire > 0;
     this.showL = approach(this.showL, allowed && smokeShown ? 1 : 0, 2.4 * hideRate, dt);
     const sL = ease(this.showL);
     const m = ease(this.toMouth);
-    const r = ease(this.rollUp);
     const breathe = Math.sin(t * 0.7) * 0.004;
+    const slotPos = item === this.joint ? JOINT_POS : CIG_POS;
 
     // Left hand: off-screen → resting on the knee → up at the mouth, or forward to roll.
     const left = this.left.root;
     _p.set(-0.62 * hw, -2.3 * hh, -d);
     _p2.set((portrait ? -0.5 : -0.3) * hw - 0.02, lift - 0.9 * hh + breathe, -d - 0.02);
     left.position.lerpVectors(_p, _p2, sL);
-    left.quaternion.copy(L_REST);
-    // At the mouth the cigarette sits low in the frame, beside the big button on a phone.
+    left.quaternion.copy(item === this.joint ? L_REST_JOINT : L_REST);
+    // At the mouth the smoke sits low in the frame, beside the big button on a phone.
     const dm = 0.33;
     _p2.set((portrait ? -0.5 : -0.1) * tRef * aspect * dm, (portrait ? -0.5 : -0.62) * tRef * dm, -dm);
-    _p2.sub(_tip.copy(SLOT_POS).applyQuaternion(L_MOUTH));
+    _p2.sub(_tip.copy(slotPos).applyQuaternion(L_MOUTH));
     left.position.lerp(_p2, m);
     left.quaternion.slerp(L_MOUTH, m);
-    _p2.set(-0.085, lift - 0.86 * hh, -d + 0.03);
+    // Rolling: pinching the paper a third of the way in from its left end.
+    _q.copy(ROLL_L_Q);
+    _p2.set(-PINCH_X, 0, 0).sub(_tip.copy(PINCH).applyQuaternion(_q));
+    _m.compose(_p2, _q, ONE).premultiply(frame.matrix);
+    _m.decompose(_p2, _q, _tip);
     left.position.lerp(_p2, r);
-    left.quaternion.slerp(L_ROLL, r);
+    left.quaternion.slerp(_q, r);
 
     // Right hand: bottle, lighter, or the other half of rolling.
     const right = this.right.root;
     const up = ease(this.beerUp);
     const tilt = ease(this.beerTilt);
     const lu = ease(this.lighterUp);
-    // Tip the bottle mouth-first toward the face; the base swings up into view.
-    _q.copy(R_BOTTLE).premultiply(_q2.setFromEuler(_e.set(0.1 + 1.55 * tilt, 0, -0.12 * (1 - tilt))));
-    _tip.set(0.136, 0.07, 0.046).applyQuaternion(_q); // bottle mouth relative to the hand
-    _p.set(0.42 * hw, -2.6 * hh, -d);
-    _p2.set(0.3 * hw + 0.02, lift - 0.05 * hh + 0.03, -d).sub(_tip);
-    right.position.lerpVectors(_p, _p2.lerp(_p, 1 - up), 1);
-    if (tilt > 0) {
+    if (this.beerUp > 0.01) {
+      // Tip the bottle mouth-first toward the face; the base swings up into view.
+      _q.copy(R_BOTTLE).premultiply(_q2.setFromEuler(_e.set(0.1 + 1.55 * tilt, 0, -0.12 * (1 - tilt))));
+      _tip.copy(BOTTLE_MOUTH).applyQuaternion(_q);
+      _p.set(0.42 * hw, -2.6 * hh, -d);
+      _p2.set(0.3 * hw + 0.02, lift - 0.05 * hh + 0.03, -d).sub(_tip);
+      right.position.lerpVectors(_p, _p2, up);
       _p2.set(0.03, lift * 0.5 - 0.1, -0.2).sub(_tip);
       right.position.lerp(_p2, tilt);
-    }
-    right.quaternion.copy(_q);
-    this.bottle.visible = this.beerUp > 0.01;
-    this.pierBottle.visible = this.beerLevel > 0 && !this.bottle.visible;
-
-    if (this.beerUp <= 0.01) {
-      // Lighter: fist up beside the tip. Rolling: mirror of the left hand.
+      right.quaternion.copy(_q);
+    } else {
+      // Lighter: fist up beside the tip of whatever is being lit.
       _p.set(0.6 * hw, -2.3 * hh, -d);
       left.updateMatrix();
-      _tip.set(0, item.tipY() + 0.01, 0).applyQuaternion(SLOT_Q).add(SLOT_POS).applyMatrix4(left.matrix);
+      _tip.set(0, item.tipY() + 0.01, 0).applyQuaternion(SLOT_Q).add(slotPos).applyMatrix4(left.matrix);
       _q.copy(R_BOTTLE).premultiply(_q2.setFromEuler(_e.set(0.25, 0.5, -0.25)));
-      _p2.set(0.064, 0.066, 0.026).applyQuaternion(_q);
+      _p2.set(0.064, 0.082, 0.03).applyQuaternion(_q);
       _p2.subVectors(_tip, _p2);
       _p2.y -= 0.012;
       right.position.lerpVectors(_p, _p2, lu);
       right.quaternion.copy(_q);
-      _p2.set(0.085, lift - 0.86 * hh, -d + 0.03);
-      right.position.lerp(_p2, r);
-      right.quaternion.slerp(R_ROLL, r);
       this.flameSprite.position.copy(_tip);
       this.flameSprite.position.y -= 0.004;
+      if (r > 0) {
+        // Rolling: first above the paper crumbling herb along it, then the mirror of the left hand.
+        const shake = working && p < 0.36 ? Math.sin(this.rollPhase * 17) * 0.0025 : 0;
+        _p2.set(-0.03 + 0.062 * pour + shake, 0.05 + shake, 0.004).sub(_tip.set(-PINCH.x, PINCH.y, PINCH.z).applyQuaternion(SPRINKLE_Q));
+        _q.copy(SPRINKLE_Q);
+        mirrorQ(ROLL_L_Q, _q2);
+        _p.set(PINCH_X, 0, 0).sub(_tip.set(-PINCH.x, PINCH.y, PINCH.z).applyQuaternion(_q2));
+        _p2.lerp(_p, take);
+        _q.slerp(_q2, take);
+        _m.compose(_p2, _q, ONE).premultiply(frame.matrix);
+        _m.decompose(_p2, _q, _tip);
+        // Once the joint is sealed the right hand lets go and drops away.
+        const leave = this.using === 'roll' ? r : r * r;
+        right.position.lerp(_p2, leave);
+        right.quaternion.slerp(_q, leave);
+      }
     }
-    this.lighter.visible = this.lighterUp > 0.01;
+    this.bottle.visible = this.beerUp > 0.01;
+    this.pierBottle.visible = this.beerLevel > 0 && !this.bottle.visible;
+    this.lighter.visible = this.lighterUp > 0.01 && this.beerUp <= 0.01;
     this.flameSprite.material.opacity = Math.min(1, this.flame * 3);
     this.flameSprite.scale.setScalar(0.045 + Math.random() * 0.012);
 
+    // ---------- fingers
     const kf = damp(12, dt);
-    this.left.pose(r > 0.4 ? POSES.roll : smokeShown ? POSES.pinch : POSES.relaxed, kf);
-    this.right.pose(this.beerUp > 0.01 ? POSES.grip : r > 0.4 ? POSES.roll : this.lighterUp > 0.01 ? POSES.fist : POSES.relaxed, kf);
-    if (rolling && this.held === 'joint' && this.rollP > 0.3) {
-      const rub = Math.sin(t * 11) * 0.16;
-      this.left.fidget(rub);
-      this.right.fidget(-rub);
+    const smokePose: HandPose = item === this.joint ? (this.regrip > 0.5 ? POSES.roll : POSES.pinch) : POSES.cig;
+    const rollPose: HandPose = curl > 0.35 ? POSES.roll : POSES.rollOpen;
+    this.left.pose(r > 0.4 ? rollPose : smokeShown ? smokePose : POSES.relaxed, kf);
+    this.right.pose(this.beerUp > 0.01 ? POSES.grip : r > 0.4 ? (take > 0.5 ? rollPose : POSES.roll) : this.lighterUp > 0.01 ? POSES.fist : POSES.relaxed, kf);
+    if (r > 0.4) {
+      // Thumbs push up while the fingers pull down, then back: the paper rolls between them.
+      const rub = wobble * 0.13;
+      this.left.nudge(rub * 0.6, -rub, -rub * 0.8, -rub * 0.8);
+      if (take > 0.5) this.right.nudge(rub * 0.6, -rub, -rub * 0.8, -rub * 0.8);
+      else if (working && p < 0.36) {
+        // Rubbing the herb between thumb and fingertips.
+        const crumble = Math.sin(this.rollPhase * 13) * 0.1;
+        this.right.nudge(crumble * 0.5, -crumble, crumble, -crumble);
+      }
     }
     left.updateMatrix();
 
-    // ---------- the paper, and whatever is being smoked
-    const p = this.rollP;
-    this.paper.visible = rolling && this.rollUp > 0.3 && p < 0.8;
-    if (this.paper.visible) {
-      const curl = ease((p - 0.3) / 0.45);
-      this.paper.position.set(0, lift - 0.86 * hh + 0.075, -d + 0.045);
-      this.paper.rotation.set(-0.95, 0, Math.sin(t * 9) * 0.03 * curl);
-      this.paper.scale.set(1.15, 1.15 * (1 - 0.85 * curl), 1.15);
-      const shown = Math.floor(clamp(p / 0.3, 0, 1) * this.herbs.length);
-      this.herbs.forEach((h, i) => (h.visible = i < shown));
+    // ---------- paper, herb and crumbs
+    const paperShown = this.rollUp > 0.25 && (this.using === 'roll' || this.rollP > 0) && p < 0.8;
+    frame.visible = paperShown;
+    if (paperShown) {
+      this.paper.set(curl);
+      this.paper.mesh.rotation.x = wobble * 0.35 * (0.3 + 0.7 * curl);
+      const laid = Math.floor(pour * this.herbs.length);
+      this.herbs.forEach((h, i) => {
+        h.visible = i < laid && curl < 0.92;
+        h.position.y = -this.paper.radius(curl, h.position.x) * (1 - 0.5 * curl) + 0.002 + (h.userData.lift as number);
+      });
+      this.crumbs.forEach((c) => {
+        const f = (this.rollPhase * 2.2 + (c.userData.phase as number)) % 1;
+        c.visible = working && p < 0.34;
+        c.position.set(-0.03 + 0.062 * pour + ((c.userData.phase as number) - 0.5) * 0.008, 0.04 - f * 0.045, 0.002);
+      });
     }
 
+    // ---------- whatever is being smoked
     for (const sm of [this.cig, this.joint]) {
       const mine = sm === item;
-      const beingRolled = sm === this.joint && rolling && p > 0.5;
-      const inHand = mine && smokeShown && !(sm === this.joint && !this.jointRolled && !sm.lit);
-      sm.group.visible = allowed && this.showL + this.rollUp > 0.02 && (inHand || beingRolled);
+      const sealed = sm === this.joint && this.rollUp > 0.25 && p >= 0.8;
+      const inHand = mine && smokeShown && (sm !== this.joint || this.jointRolled || sm.lit);
+      sm.group.visible = allowed && (sealed || (inHand && this.showL + this.rollUp > 0.02));
       if (!sm.group.visible) continue;
+      sm.group.scale.setScalar(1);
       // In the fingers of the left hand…
-      _m.compose(SLOT_POS, SLOT_Q, _p.set(1, 1, 1)).premultiply(left.matrix);
-      _m.decompose(sm.group.position, sm.group.quaternion, _p);
-      sm.group.scale.setScalar(1.12);
-      if (sm === this.joint && this.rollUp > 0 && !sm.lit) {
-        // …or lying across the fingertips of both while it is rolled.
-        _p.set(-0.045 * 1.12, lift - 0.86 * hh + 0.075, -d + 0.05);
-        _q.setFromEuler(_e.set(t * 7 * (rolling ? 1 : 0), 0, -Math.PI / 2, 'ZXY'));
-        sm.group.position.lerp(_p, r);
-        sm.group.quaternion.slerp(_q, r);
-        sm.group.scale.setScalar(1.12 * (beingRolled ? ease((p - 0.5) / 0.25) : 1));
+      _m.compose(sm === this.joint ? JOINT_POS : CIG_POS, SLOT_Q, ONE).premultiply(left.matrix);
+      _m.decompose(sm.group.position, sm.group.quaternion, _tip);
+      if (sm === this.joint && (sealed || this.regrip > 0)) {
+        // …or still held the way it was rolled: lying along the paper's axis, pinched near the filter.
+        // The left hand carries it, so work out where that is from the hand itself.
+        _q.copy(ROLL_L_Q).invert();
+        _p.set(-PAPER_LEN / 2, 0, 0).sub(_p2.set(-PINCH_X, 0, 0)).applyQuaternion(_q).add(PINCH);
+        _q.multiply(_q2.setFromEuler(_e.set(0, 0, -Math.PI / 2)));
+        _m2.compose(_p, _q, ONE).premultiply(left.matrix);
+        _m2.decompose(_p, _q, _tip);
+        const w = sealed ? 1 : ease(this.regrip);
+        sm.group.position.lerp(_p, w);
+        sm.group.quaternion.slerp(_q, w);
       }
       if (sm.lit && this.toMouth < 0.35) {
         this.wisp -= dt;
@@ -791,7 +962,7 @@ export class Leisure {
 
   /** Objects that must be on screen once so their shaders are built before play starts. */
   warmUp(on: boolean): void {
-    for (const o of [this.bottle, this.lighter, this.paper, this.cig.group, this.joint.group, this.pierBottle]) o.visible = on;
+    for (const o of [this.bottle, this.lighter, this.rollFrame, this.cig.group, this.joint.group, this.pierBottle]) o.visible = on;
     this.puffs[0].sprite.visible = on;
     this.left.root.position.set(0, 0, -0.5);
     this.right.root.position.set(0.1, 0, -0.5);

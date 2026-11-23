@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Sfx } from './audio';
 import { Game } from './game';
+import { Leisure } from './leisure';
 import './style.css';
 import { UI } from './ui';
 import { createWorld } from './world';
@@ -19,7 +20,9 @@ const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerH
 const world = createWorld(renderer, coarse);
 const ui = new UI();
 const audio = new Sfx();
-const game = new Game(world, camera, ui, audio);
+world.scene.add(camera);
+const leisure = await Leisure.create(camera, world.environment, audio);
+const game = new Game(world, camera, ui, audio, leisure);
 game.warmUp(renderer);
 
 function resize(): void {

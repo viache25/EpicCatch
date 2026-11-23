@@ -82,7 +82,6 @@ export class Game {
   private readonly line = new FishingLine();
   private readonly float: THREE.Group;
   private readonly fx = new WaterFx();
-  private readonly leisure: Leisure;
   private readonly fill = new THREE.PointLight(0xfff1de, 0.5, 5, 1.2);
   private readonly stand = new THREE.Group();
   private readonly standPost: THREE.Mesh;
@@ -130,6 +129,7 @@ export class Game {
     private readonly camera: THREE.PerspectiveCamera,
     private readonly ui: UI,
     private readonly audio: Sfx,
+    private readonly leisure: Leisure,
   ) {
     this.rod = new Rod(world.environment);
     this.float = createFloat(world.environment);
@@ -142,7 +142,6 @@ export class Game {
     // The sun is in the angler's face, so hands and the catch get a soft fill from the near side.
     this.fill.position.set(0, 0.15, 0.1);
     camera.add(this.fill);
-    this.leisure = new Leisure(camera, world.environment, audio);
     this.leisure.onToast = (text) => ui.toast(text);
     this.leisure.onLabels = (labels) => ui.setLeisureLabels(labels);
     this.leisure.pierBottle.position.set(-0.5, PIER_TOP_Y, -0.35);
