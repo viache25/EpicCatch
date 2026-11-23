@@ -2,6 +2,7 @@
 export class Sfx {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
+  private tone: BiquadFilterNode | null = null;
   private noise: AudioBuffer | null = null;
   private clickAcc = 0;
   private birdTimer = 2;
@@ -18,7 +19,10 @@ export class Sfx {
     this.ctx = ctx;
     this.master = ctx.createGain();
     this.master.gain.value = 0.9;
-    this.master.connect(ctx.destination);
+    this.tone = ctx.createBiquadFilter();
+    this.tone.type = 'lowpass';
+    this.tone.frequency.value = 18000;
+    this.master.connect(this.tone).connect(ctx.destination);
 
     const len = ctx.sampleRate * 2;
     this.noise = ctx.createBuffer(1, len, ctx.sampleRate);
@@ -134,6 +138,18 @@ export class Sfx {
 
   exhale(): void {
     this.burst(1500, 0.5, 0.06, 1.1, 600);
+  }
+
+  cough(): void {
+    for (let i = 0; i < 3; i++) {
+      window.setTimeout(() => this.burst(520 + Math.random() * 200, 0.9, 0.3, 0.16, 260), i * 260 + Math.random() * 60);
+    }
+  }
+
+  /** 0 = clear, 1 = the world heard through cotton wool. */
+  setMuffle(x: number): void {
+    if (!this.ctx || !this.tone) return;
+    this.tone.frequency.setTargetAtTime(18000 - 14500 * Math.min(1, x), this.ctx.currentTime, 0.3);
   }
 
   rustle(): void {

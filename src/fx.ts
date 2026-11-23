@@ -70,6 +70,13 @@ export class WaterFx {
     this.object.add(this.drops);
   }
 
+  /** Put one of everything on screen so its shader is built before play starts. */
+  warmUp(on: boolean): void {
+    this.rings[0].mesh.visible = on;
+    this.dropPos[1] = on ? 1 : -999;
+    this.drops.geometry.getAttribute('position').needsUpdate = true;
+  }
+
   /** Concentric rings spreading from (x, z). */
   ripple(x: number, z: number, size = 1, strength = 0.5, count = 3): void {
     for (let k = 0; k < count; k++) {

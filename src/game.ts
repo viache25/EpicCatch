@@ -6,7 +6,7 @@ import { Leisure } from './leisure';
 import { clamp, damp, lerp } from './noise';
 import { FishingLine, Rod, createFloat } from './rod';
 import { formatKg, UI } from './ui';
-import { EYE, PIER_END_Z, shoreDist, type World } from './world';
+import { EYE, PIER_END_Z, PIER_TOP_Y, shoreDist, type World } from './world';
 
 type State =
   | 'menu'
@@ -25,6 +25,8 @@ type State =
 const ORIGIN = new THREE.Vector3(0, 0, PIER_END_Z);
 const FLOAT_REST = -0.124;
 const UP = new THREE.Vector3(0, 1, 0);
+/** How far the eye drops when the angler sits down to wait. */
+const SIT_DROP = 0.52;
 
 interface Bite {
   catch: Catch;
@@ -81,8 +83,16 @@ export class Game {
   private readonly float: THREE.Group;
   private readonly fx = new WaterFx();
   private readonly leisure: Leisure;
-  private filterKey = '';
-  private readonly fill = new THREE.PointLight(0xfff1de, 1.6, 5, 1.2);
+  private readonly fill = new THREE.PointLight(0xfff1de, 0.5, 5, 1.2);
+  private readonly stand = new THREE.Group();
+  private readonly standPost: THREE.Mesh;
+  private readonly rodBase = new THREE.Vector3();
+  private eyeDrop = 0;
+  /** Looking closely at the float rather than taking in the lake. */
+  private watch = false;
+  private moodShown = -1;
+  /** Clock for water and sky; runs slow when the angler is high. */
+  worldTime = 0;
   private rodPitch = 0.62;
   private rodYaw = 0;
   private rodBend = 0.04;
@@ -101,7 +111,6 @@ export class Game {
   private castLaunched = false;
 
   private biteTimer = 0;
-  private firstCast = true;
   private bite: Bite | null = null;
   private fight: Fight | null = null;
   private landed: Catch | null = null;
@@ -121,7 +130,6 @@ export class Game {
     private readonly camera: THREE.PerspectiveCamera,
     private readonly ui: UI,
     private readonly audio: Sfx,
-    private readonly renderTarget: HTMLCanvasElement,
   ) {
     this.rod = new Rod(world.environment);
     this.float = createFloat(world.environment);
@@ -131,17 +139,38 @@ export class Game {
     camera.updateProjectionMatrix();
 
     world.scene.add(camera);
-    // The sun is behind the fish when it is held up, so give it a soft fill from the angler's side.
-    this.fill.visible = false;
+    // The sun is in the angler's face, so hands and the catch get a soft fill from the near side.
+    this.fill.position.set(0, 0.15, 0.1);
     camera.add(this.fill);
     this.leisure = new Leisure(camera, world.environment, audio);
     this.leisure.onToast = (text) => ui.toast(text);
     this.leisure.onLabels = (labels) => ui.setLeisureLabels(labels);
-    ui.onLeisure = (kind) => {
-      if (!this.leisureAllowed()) return;
-      this.leisure.request(kind);
+    this.leisure.pierBottle.position.set(-0.5, PIER_TOP_Y, -0.35);
+    world.scene.add(this.leisure.pierBottle);
+    ui.onLeisure = (kind, down) => {
+      if (!down) this.leisure.release(kind);
+      else if (this.leisureAllowed()) this.leisure.press(kind);
       ui.setLeisureLabels(this.leisure.labels());
     };
+    ui.onTap = () => {
+      if (this.state === 'waiting') {
+        this.watch = !this.watch;
+        this.waitingHint();
+      }
+    };
+
+    // Rod rest: a steel fork on a post, set up wherever the rod is laid down.
+    const steel = new THREE.MeshStandardMaterial({ color: 0x55585c, roughness: 0.45, metalness: 0.85, envMap: world.environment });
+    const postGeo = new THREE.CylinderGeometry(0.007, 0.007, 1, 8);
+    postGeo.translate(0, 0.5, 0);
+    this.standPost = new THREE.Mesh(postGeo, steel);
+    const fork = new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.005, 6, 14, Math.PI), steel);
+    fork.rotation.z = Math.PI;
+    fork.name = 'fork';
+    this.stand.add(this.standPost, fork);
+    this.stand.visible = false;
+    world.scene.add(this.stand);
+    this.rodBase.copy(EYE);
 
     ui.onPress = () => this.press();
     ui.onRelease = () => this.release();
@@ -157,9 +186,29 @@ export class Game {
     this.ui.toast('Ведите пальцем по экрану, чтобы выбрать место заброса', 4600);
   }
 
-  /** Free hand only: not while casting or playing a fish. */
+  /** Hands are free only while the rod is on its rest. */
   private leisureAllowed(): boolean {
-    return this.state === 'idle' || this.state === 'waiting' || this.state === 'bite';
+    return this.state === 'waiting' || this.state === 'bite';
+  }
+
+  private waitingHint(): void {
+    this.ui.setHint(this.watch ? 'Следите за поплавком' : 'Нажмите на воду — смотреть на поплавок');
+  }
+
+  /** Builds every shader up front so nothing stutters the first time it appears. */
+  warmUp(renderer: THREE.WebGLRenderer): void {
+    const dummy = buildFish(rollCatch(Math.random, 'roach'), this.world.environment);
+    dummy.group.position.set(0, 1, -3);
+    this.world.scene.add(dummy.group);
+    this.leisure.warmUp(true);
+    this.fx.warmUp(true);
+    this.stand.visible = true;
+    renderer.compile(this.world.scene, this.camera);
+    this.leisure.warmUp(false);
+    this.fx.warmUp(false);
+    this.stand.visible = false;
+    // Kept in the scene, hidden, so the fish shaders stay cached.
+    dummy.group.visible = false;
   }
 
   private baseFov(): number {
@@ -202,7 +251,8 @@ export class Game {
         break;
       case 'waiting':
         ui.setAction('Подсечка');
-        ui.setHint('Следите за поплавком');
+        this.watch = false;
+        this.waitingHint();
         break;
       case 'fight':
         ui.setAction('Мотать');
@@ -266,6 +316,7 @@ export class Game {
     this.bite = null;
     this.retrieveFrom.copy(this.floatPos);
     this.fx.ripple(this.floatPos.x, this.floatPos.z, 0.5, 0.4, 2);
+    this.watch = false;
     this.enter('retrieve');
   }
 
@@ -327,6 +378,7 @@ export class Game {
     let yawTarget = this.aim;
     let sag = 0;
     let lineToFloat = true;
+    let onStand = false;
 
     this.forward(_v, this.aim);
     lookX = ORIGIN.x + _v.x * 16;
@@ -373,8 +425,8 @@ export class Game {
             this.fx.splash(this.castTo.x, this.castTo.z, 0.35);
             this.audio.plop();
             this.dipVel = 0.9;
-            this.biteTimer = this.firstCast ? 3.5 + Math.random() * 2 : 5 + Math.random() * 8;
-            this.firstCast = false;
+            // About a minute of peace before anything touches the bait.
+            this.biteTimer = 45 + Math.random() * 30;
             this.floatPos.copy(this.castTo);
             this.enter('waiting');
           }
@@ -395,7 +447,7 @@ export class Game {
             this.bite = {
               catch: c,
               phase: 'nibble',
-              nibbles: c.species.bite === 'run' ? Math.floor(Math.random() * 2) : 1 + Math.floor(Math.random() * 3),
+              nibbles: c.species.bite === 'run' ? 1 : 2 + Math.floor(Math.random() * 2),
               next: 0,
               left: 0,
               dirX: Math.cos(a),
@@ -403,16 +455,26 @@ export class Game {
               age: 0,
             };
             this.enter('bite');
+            // The eye is drawn to the float the moment it twitches.
+            this.watch = true;
             this.ui.setAction('Подсечка');
-            this.ui.setHint('Следите за поплавком');
+            this.ui.setHint('Клюёт! Ждите, пока поплавок уйдёт');
+            this.ui.toast('Клюёт!', 1800);
+            vibrate([40, 60, 40]);
           }
         } else {
           this.updateBite(dt);
         }
         lookX = this.floatPos.x;
         lookZ = this.floatPos.z;
-        lookY = 0.1;
-        fovTarget = this.zoomFov(this.floatSpan(), EYE.distanceTo(this.floatPos));
+        if (this.watch) {
+          lookY = 0.1;
+          fovTarget = this.zoomFov(this.floatSpan(), EYE.distanceTo(this.floatPos));
+        } else {
+          // Sitting back: the whole lake, the rod on its rest, the float a speck out there.
+          lookY = 0.75;
+        }
+        onStand = true;
         break;
       }
       case 'fight': {
@@ -524,17 +586,38 @@ export class Game {
       pitchRate = 18;
       bendTarget = Math.max(bendTarget, 0.3);
     }
+    onStand = onStand && this.yank <= 0;
+    if (onStand) {
+      // Butt on the planks, blank across the fork, pointing at the float.
+      pitchTarget = 0.33;
+      yawTarget = clamp(Math.atan2(this.floatPos.x, -(this.floatPos.z - 0.9)), -0.7, 0.7);
+      _base.set(clamp(0.3 - 0.9 * Math.sin(yawTarget), -0.55, 0.55), PIER_TOP_Y + 0.05, 0.9);
+      bendTarget = 0.03;
+    } else {
+      this.forward(_v, this.aim);
+      _base.copy(EYE).addScaledVector(_v, 0.32);
+      _base.x += Math.cos(this.aim) * 0.3;
+      _base.z += Math.sin(this.aim) * 0.3;
+      _base.y -= 0.62;
+    }
     this.rodPitch += (pitchTarget - this.rodPitch) * damp(pitchRate, dt);
     this.rodYaw += (yawTarget - this.rodYaw) * damp(5, dt);
     this.rodBend += (bendTarget - this.rodBend) * damp(9, dt);
-    this.forward(_v, this.aim);
-    _base.copy(EYE).addScaledVector(_v, 0.32);
-    _base.x += Math.cos(this.aim) * 0.3;
-    _base.z += Math.sin(this.aim) * 0.3;
-    _base.y -= 0.62;
+    this.rodBase.lerp(_base, damp(this.yank > 0 ? 16 : 6, dt));
     const cp = Math.cos(this.rodPitch);
-    _dir.set(Math.sin(this.rodYaw) * cp - 0.04, Math.sin(this.rodPitch), -Math.cos(this.rodYaw) * cp).normalize();
-    this.rod.update(_base, _dir, this.floatPos, this.rodBend);
+    _dir.set(Math.sin(this.rodYaw) * cp - (onStand ? 0 : 0.04), Math.sin(this.rodPitch), -Math.cos(this.rodYaw) * cp).normalize();
+    this.rod.update(this.rodBase, _dir, this.floatPos, this.rodBend);
+
+    this.stand.visible = onStand && this.stateT > 0.5;
+    if (this.stand.visible) {
+      const s = 1.5;
+      const y = this.rodBase.y + _dir.y * s;
+      this.stand.position.set(this.rodBase.x + _dir.x * s, PIER_TOP_Y, this.rodBase.z + _dir.z * s);
+      this.stand.rotation.y = -this.rodYaw;
+      const h = y - PIER_TOP_Y - 0.012;
+      this.standPost.scale.y = h - 0.03;
+      this.stand.getObjectByName('fork')!.position.y = h + 0.03;
+    }
 
     // Line.
     if (lineToFloat) {
@@ -545,29 +628,35 @@ export class Game {
       this.line.update(this.rod.tip, this.floatPos, sag);
     }
 
-    this.fill.visible = this.state === 'landing' || this.state === 'card';
+    const showing = this.state === 'landing' || this.state === 'card';
+    this.fill.intensity += ((showing ? 1.6 : 0.5) - this.fill.intensity) * damp(4, dt);
 
-    // Beer makes the pier sway, the joint makes the morning glow.
+    // Beer makes the pier sway, the joint warms and slows the morning.
     const allowed = this.leisureAllowed();
     this.ui.showLeisure(allowed);
     this.leisure.update(dt, t, allowed, this.fov, base, cam.aspect);
     const drunk = this.leisure.drunk;
     const high = this.leisure.high;
     fovTarget *= 1 + high * 0.035 * Math.sin(t * 0.45);
-    const key = high > 0.01 ? `saturate(${(1 + high * 0.5).toFixed(2)}) hue-rotate(${(Math.sin(t * 0.25) * 9 * high).toFixed(1)}deg) contrast(${(1 + high * 0.07).toFixed(2)})` : '';
-    if (key !== this.filterKey) {
-      this.filterKey = key;
-      this.renderTarget.style.filter = key;
+    this.worldTime += dt * (1 - 0.4 * high);
+    if (Math.abs(high - this.moodShown) > 0.01) {
+      this.moodShown = high;
+      this.world.setMood(high);
+      this.ui.setMood(high);
+      this.audio.setMuffle(high * 0.85);
     }
 
-    // Camera: slow breathing sway, smoothed look-at and zoom.
+    // Camera: sits down to wait, breathes, sways; smoothed look-at and zoom.
+    this.eyeDrop += ((onStand ? SIT_DROP : 0) - this.eyeDrop) * damp(2.6, dt);
     const sway = 1 + drunk * 7 + high * 2;
-    cam.position.set(EYE.x + Math.sin(t * 0.5) * 0.012 * sway, EYE.y + Math.sin(t * 0.83) * 0.008 * sway, EYE.z);
+    cam.position.set(EYE.x + Math.sin(t * 0.5) * 0.012 * sway, EYE.y - this.eyeDrop + Math.sin(t * 0.83) * 0.008 * sway, EYE.z);
     this.look.x += (lookX - this.look.x) * damp(3.2, dt);
     this.look.y += (lookY - this.look.y) * damp(3.2, dt);
     this.look.z += (lookZ - this.look.z) * damp(3.2, dt);
     cam.lookAt(this.look);
     cam.rotateZ(Math.sin(t * 0.62) * 0.035 * drunk + Math.sin(t * 0.21) * 0.012 * high);
+    const kick = this.leisure.kick;
+    if (kick > 0) cam.rotateX(Math.sin(t * 38) * 0.03 * kick * kick - 0.05 * kick);
     this.fov += (fovTarget - this.fov) * damp(2.4, dt);
     if (Math.abs(cam.fov - this.fov) > 0.01) {
       cam.fov = this.fov;
@@ -595,7 +684,7 @@ export class Game {
       if (b.next <= 0) {
         if (b.nibbles > 0) {
           b.nibbles--;
-          b.next = 0.5 + Math.random() * 0.9;
+          b.next = 0.8 + Math.random() * 0.8;
           this.dipVel += 0.5 + Math.random() * 0.35;
           this.fx.ripple(this.floatPos.x, this.floatPos.z, 0.25, 0.3, 2);
           vibrate(25);
@@ -739,6 +828,12 @@ export class Game {
 
   /** Test hooks, used by automated checks only. */
   debug = {
+    /** Cast straight out without touching the button. */
+    quickCast: (power = 0.6) => {
+      this.enter('charging');
+      this.power = power;
+      this.cast();
+    },
     forceBite: (speciesId?: string) => {
       this.biteTimer = 0;
       if (speciesId) this.debugSpecies = speciesId;

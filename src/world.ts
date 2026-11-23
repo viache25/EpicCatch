@@ -744,11 +744,16 @@ export interface World {
   water: Water;
   environment: THREE.Texture;
   update(t: number): void;
+  /** 0 = sober morning, 1 = everything golden, hazy and a little wavy. */
+  setMood(high: number): void;
 }
 
 export function createWorld(renderer: THREE.WebGLRenderer, lowPower: boolean): World {
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(FOG_COLOR, 0.0058);
+  const fog = new THREE.FogExp2(FOG_COLOR, 0.0058);
+  const fogBase = new THREE.Color(FOG_COLOR);
+  const fogHigh = new THREE.Color(0xe6a583);
+  scene.fog = fog;
 
   // Sky drives both the backdrop and the image-based lighting.
   const sky = new Sky();
@@ -833,6 +838,17 @@ export function createWorld(renderer: THREE.WebGLRenderer, lowPower: boolean): W
     scene,
     water,
     environment: envTarget.texture,
+    setMood(high: number) {
+      const h = Math.min(1, Math.max(0, high));
+      renderer.toneMappingExposure = 0.5 * (1 + 0.16 * h);
+      fog.color.copy(fogBase).lerp(fogHigh, h * 0.7);
+      fog.density = 0.0058 * (1 + 0.3 * h);
+      glow.material.opacity = 0.5 + 0.4 * h;
+      glow.scale.setScalar(1500 * (1 + 0.6 * h));
+      sun.intensity = 3.2 * (1 + 0.25 * h);
+      su.rayleigh.value = 2.3 + 0.9 * h;
+      water.material.uniforms.distortionScale.value = 1.6 + 1.6 * h;
+    },
     update(t: number) {
       water.material.uniforms.time.value = t * 0.55;
       su.time.value = t;

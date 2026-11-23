@@ -48,6 +48,15 @@ body {
   background: radial-gradient(ellipse at 50% 45%, rgba(0, 0, 0, 0) 52%, rgba(10, 6, 2, 0.5) 100%);
 }
 
+#mood {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1.2s linear;
+  background: radial-gradient(ellipse at 50% 42%, rgba(255, 196, 120, 0.06) 0%, rgba(255, 150, 90, 0.2) 60%, rgba(150, 50, 100, 0.34) 100%);
+}
+
 #hud {
   position: fixed;
   inset: 0;
@@ -118,8 +127,10 @@ body {
   line-height: 1.1;
 }
 
-#leisure button:active {
-  filter: brightness(1.5);
+#leisure button.down {
+  background: rgba(232, 161, 60, 0.85);
+  color: var(--accent-ink);
+  transform: scale(0.95);
 }
 
 #leisure .ico {

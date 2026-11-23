@@ -14,7 +14,8 @@ export class UI {
   onPress: () => void = () => {};
   onRelease: () => void = () => {};
   onAim: (dx: number) => void = () => {};
-  onLeisure: (kind: LeisureKind) => void = () => {};
+  onLeisure: (kind: LeisureKind, down: boolean) => void = () => {};
+  onTap: () => void = () => {};
 
   private readonly act = el<HTMLButtonElement>('act');
   private readonly hint = el('hint');
@@ -26,6 +27,7 @@ export class UI {
   private readonly dist = el('dist');
   private readonly card = el('card');
   private readonly leisure = el('leisure');
+  private readonly mood = el('mood');
   private toastTimer = 0;
   private lastHint = '';
   private lastLabel = '';
@@ -49,10 +51,22 @@ export class UI {
     this.act.addEventListener('contextmenu', (e) => e.preventDefault());
 
     for (const kind of ['beer', 'cig', 'joint'] as const) {
-      el(`l-${kind}`).addEventListener('pointerdown', (e) => {
+      // Hold to drink or draw, let go to stop.
+      const btn = el(`l-${kind}`);
+      btn.addEventListener('pointerdown', (e) => {
         e.preventDefault();
-        this.onLeisure(kind);
+        btn.setPointerCapture(e.pointerId);
+        btn.classList.add('down');
+        this.onLeisure(kind, true);
       });
+      const lift = () => {
+        if (!btn.classList.contains('down')) return;
+        btn.classList.remove('down');
+        this.onLeisure(kind, false);
+      };
+      btn.addEventListener('pointerup', lift);
+      btn.addEventListener('pointercancel', lift);
+      btn.addEventListener('contextmenu', (e) => e.preventDefault());
     }
 
     // Keyboard for desktop testing.
@@ -74,9 +88,14 @@ export class UI {
     const scene = el<HTMLCanvasElement>('scene');
     let dragging = false;
     let lastX = 0;
+    let downX = 0;
+    let downY = 0;
+    let downAt = 0;
     scene.addEventListener('pointerdown', (e) => {
       dragging = true;
-      lastX = e.clientX;
+      lastX = downX = e.clientX;
+      downY = e.clientY;
+      downAt = performance.now();
       scene.setPointerCapture(e.pointerId);
     });
     scene.addEventListener('pointermove', (e) => {
@@ -84,9 +103,12 @@ export class UI {
       this.onAim((e.clientX - lastX) / window.innerWidth);
       lastX = e.clientX;
     });
-    const end = () => (dragging = false);
-    scene.addEventListener('pointerup', end);
-    scene.addEventListener('pointercancel', end);
+    scene.addEventListener('pointerup', (e) => {
+      dragging = false;
+      // A quick touch that did not travel is a tap.
+      if (performance.now() - downAt < 400 && Math.hypot(e.clientX - downX, e.clientY - downY) < 12) this.onTap();
+    });
+    scene.addEventListener('pointercancel', () => (dragging = false));
   }
 
   showHud(): void {
@@ -100,6 +122,11 @@ export class UI {
   setLeisureLabels(labels: LeisureLabels): void {
     el('l-cig-label').textContent = labels.cig;
     el('l-joint-label').textContent = labels.joint;
+  }
+
+  /** Warm haze over the picture; opacity only, so the browser composites it for free. */
+  setMood(high: number): void {
+    this.mood.style.opacity = (high * 0.9).toFixed(2);
   }
 
   setAction(label: string, urgent = false): void {

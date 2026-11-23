@@ -19,7 +19,8 @@ const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerH
 const world = createWorld(renderer, coarse);
 const ui = new UI();
 const audio = new Sfx();
-const game = new Game(world, camera, ui, audio, canvas);
+const game = new Game(world, camera, ui, audio);
+game.warmUp(renderer);
 
 function resize(): void {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -38,7 +39,7 @@ function frame(): void {
   timer.update();
   const dt = Math.min(0.05, timer.getDelta());
   game.update(dt);
-  world.update(timer.getElapsed());
+  world.update(game.worldTime);
   renderer.render(world.scene, camera);
 
   // Step resolution down on phones that cannot hold the frame rate.
