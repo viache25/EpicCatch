@@ -243,14 +243,19 @@ function mirrorQ(q: THREE.Quaternion, out: THREE.Quaternion): THREE.Quaternion {
 // the smoke standing up from them. Mouth: palm turned to the face.
 const L_REST = euler(-1.25, Math.PI, 0.35, 'ZXY');
 const L_MOUTH = euler(0.45, 0.25, -0.5, 'ZXY');
-/** A joint is pinched, not wedged: at rest the hand is turned thumb-up so it points up and out. */
-const L_REST_JOINT = aim([0.25, 0.35, -0.9], [0.75, -0.6, 0.2]);
+// A joint is pinched, not wedged between fingers: it lies across the pads of thumb and index
+// finger, mouth end on the thumb side. So the hand is held thumb-toward-the-face, joint
+// pointing out over the water, both resting and at the lips.
+const L_REST_JOINT = basis([-0.15, 0.45, -0.88], [0.55, 0.8, 0.25], [0, 0, 1]);
+const L_MOUTH_JOINT = basis([0, 0.18, -1], [0.5, 0.85, 0.1], [0, 0, 1]);
 /** Where a cigarette sits between index and middle finger, in the left hand's frame. */
 const CIG_POS = new THREE.Vector3(-0.009, 0.14, 0.036);
-/** Where a joint sits in the thumb-and-index pinch. */
-const JOINT_POS = new THREE.Vector3(-0.0205, 0.1175, 0.0805);
-/** Both stick out through the back of the fingers, filter end on the palm side. */
-const SLOT_Q = euler(-Math.PI / 2, 0, 0);
+/** It sticks out through the back of the fingers, filter end on the palm side. */
+const CIG_Q = euler(-Math.PI / 2, 0, 0);
+/** Mouth end of a joint in the pinch: two centimetres to the thumb side of where the pads meet. */
+const JOINT_POS = new THREE.Vector3(-0.0436, 0.1175, 0.0605);
+/** It runs across the hand, burning end toward the little finger. */
+const JOINT_Q = euler(0, 0, -Math.PI / 2);
 
 // ---- Right hand round a bottle: thumb side up, fingers reaching away, palm to the left.
 const R_BOTTLE = basis([0, 1, 0], [0, 0, -1], [-1, 0, 0]);
@@ -644,7 +649,8 @@ export class Leisure {
 
     // ---------- rolling (both hands)
     const rolling = this.using === 'roll';
-    const working = rolling && this.held === 'joint';
+    // Once it is rolled shut, the lick and seal finish on their own.
+    const working = rolling && (this.held === 'joint' || this.rollP >= 0.8);
     // Let go mid-roll and the hands wait a moment before going down; progress is kept.
     this.rollIdle = working ? 0 : this.rollIdle + dt;
     if (rolling && this.rollIdle > 1.6) this.using = null;
@@ -801,6 +807,8 @@ export class Leisure {
     const m = ease(this.toMouth);
     const breathe = Math.sin(t * 0.7) * 0.004;
     const slotPos = item === this.joint ? JOINT_POS : CIG_POS;
+    const slotQ = item === this.joint ? JOINT_Q : CIG_Q;
+    const mouthQ = item === this.joint ? L_MOUTH_JOINT : L_MOUTH;
 
     // Left hand: off-screen → resting on the knee → up at the mouth, or forward to roll.
     const left = this.left.root;
@@ -811,9 +819,9 @@ export class Leisure {
     // At the mouth the smoke sits low in the frame, beside the big button on a phone.
     const dm = 0.33;
     _p2.set((portrait ? -0.5 : -0.1) * tRef * aspect * dm, (portrait ? -0.5 : -0.62) * tRef * dm, -dm);
-    _p2.sub(_tip.copy(slotPos).applyQuaternion(L_MOUTH));
+    _p2.sub(_tip.copy(slotPos).applyQuaternion(mouthQ));
     left.position.lerp(_p2, m);
-    left.quaternion.slerp(L_MOUTH, m);
+    left.quaternion.slerp(mouthQ, m);
     // Rolling: pinching the paper a third of the way in from its left end.
     _q.copy(ROLL_L_Q);
     _p2.set(-PINCH_X, 0, 0).sub(_tip.copy(PINCH).applyQuaternion(_q));
@@ -841,7 +849,7 @@ export class Leisure {
       // Lighter: fist up beside the tip of whatever is being lit.
       _p.set(0.6 * hw, -2.3 * hh, -d);
       left.updateMatrix();
-      _tip.set(0, item.tipY() + 0.01, 0).applyQuaternion(SLOT_Q).add(slotPos).applyMatrix4(left.matrix);
+      _tip.set(0, item.tipY() + 0.01, 0).applyQuaternion(slotQ).add(slotPos).applyMatrix4(left.matrix);
       _q.copy(R_BOTTLE).premultiply(_q2.setFromEuler(_e.set(0.25, 0.5, -0.25)));
       _p2.set(0.064, 0.082, 0.03).applyQuaternion(_q);
       _p2.subVectors(_tip, _p2);
@@ -919,7 +927,7 @@ export class Leisure {
       if (!sm.group.visible) continue;
       sm.group.scale.setScalar(1);
       // In the fingers of the left hand…
-      _m.compose(sm === this.joint ? JOINT_POS : CIG_POS, SLOT_Q, ONE).premultiply(left.matrix);
+      _m.compose(sm === this.joint ? JOINT_POS : CIG_POS, sm === this.joint ? JOINT_Q : CIG_Q, ONE).premultiply(left.matrix);
       _m.decompose(sm.group.position, sm.group.quaternion, _tip);
       if (sm === this.joint && (sealed || this.regrip > 0)) {
         // …or still held the way it was rolled: lying along the paper's axis, pinched near the filter.

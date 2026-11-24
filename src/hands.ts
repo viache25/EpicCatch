@@ -205,8 +205,8 @@ export const POSES = {
   relaxed: { f: fingers([0.3, 0.35, 0.2, 0], [0.35, 0.4, 0.25, 0], [0.4, 0.45, 0.25, 0], [0.45, 0.45, 0.25, 0]), t: [0.25, 0, 0.15, 0.15] },
   /** Cigarette between index and middle finger, the rest tucked away. */
   cig: { f: fingers([0.15, 0.2, 0.1, -0.06], [0.2, 0.25, 0.12, 0.06], [1.2, 1.3, 0.7, 0], [1.25, 1.3, 0.7, 0]), t: [0.6, -0.1, 0.35, 0.3] },
-  /** Joint pinched between thumb and index finger, other fingers fanned. */
-  pinch: { f: fingers([0.55, 0.8, 0.5, -0.05], [0.35, 0.4, 0.25, 0], [0.3, 0.35, 0.2, 0], [0.3, 0.3, 0.2, 0]), t: [0.65, -0.01, 0.1, 0.19] },
+  /** Joint held crosswise between the pads of thumb and index finger, other fingers fanned clear of it. */
+  pinch: { f: fingers([0.55, 0.8, 0.5, -0.05], [0.12, 0.2, 0.1, 0.02], [0.08, 0.15, 0.1, 0.05], [0.05, 0.12, 0.1, 0.1]), t: [0.57, 0, 0.17, 0.28] },
   /** Wrapped round a bottle. */
   grip: { f: fingers([0.6, 0.85, 0.45, 0], [0.62, 0.86, 0.45, 0], [0.64, 0.86, 0.45, 0], [0.68, 0.86, 0.45, 0]), t: [0.5, 0.2, 0.3, 0.3] },
   /** Closed on a lighter, thumb over the wheel. */
